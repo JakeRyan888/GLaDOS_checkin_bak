@@ -9,7 +9,7 @@ if __name__ == '__main__':
 #   消息推送
     sendmsg = ''
 #   GLaDOS cookie
-    cookies = os.environ.get("GLADOS_COOKIES",[]).split("&")
+    cookies = os.environ.get('GLADOS_COOKIES',[]).split('&')
     if cookies[0] == '':
         print('未获取到GLADOS_COOKIES环境变量')
         cookies = []
