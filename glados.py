@@ -22,11 +22,14 @@ if __name__ == '__main__':
     payload = {
         'token': 'glados.one'
     }
-
+    days = []
+    balance = []
+    change = []
     for cookie in cookies:
         checkin = requests.post(checkin_url,
                                 headers={'cookie':cookie,'referrer':referrer,'origin':origin,'user-agent':useragent,'content-type':'application/json; charset=utf-8'},data = json.dumps(payload))
         status = requests.get(status_url,headers={'cookie':cookie,'referrer':referrer,'origin':origin,'useragent':useragent})
+        
         days = status.json()['data']['leftDays'].split('.')[0]
         email = status.json()['data']['email']
 
