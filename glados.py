@@ -9,7 +9,7 @@ if __name__ == '__main__':
 #   消息推送
     sendmsg = ''
 #   GLaDOS cookie
-    cookies = os.environ.get('GLADOS_COOKIES',[]).split('&')
+    cookies = os.environ.get('GLADOS_COOKIES', '').split('&')
     if cookies[0] == '':
         print('未获取到GLADOS_COOKIES环境变量')
         cookies = []
@@ -19,19 +19,58 @@ if __name__ == '__main__':
     referrer = 'https://glados.cloud/console/checkin'
     origin = 'https://glados.cloud'
     useragent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    headers = {
+        'Referer': referrer,
+        'Origin': origin,
+        'User-Agent': useragent,
+        'Content-Type': 'application/json; charset=utf-8',
+    }
     payload = {
         'token': 'glados.cloud'
     }
     for cookie in cookies:
-        checkin = requests.post(checkin_url,
-                                headers={'cookie':cookie,'referrer':referrer,'origin':origin,'user-agent':useragent,'content-type':'application/json; charset=utf-8'},data = json.dumps(payload))
-        status = requests.get(status_url,headers={'cookie':cookie,'referrer':referrer,'origin':origin,'useragent':useragent})
-        
-        days = str(status.json()['data']['leftDays']).split('.')[0]
-        email = status.json()['data']['email']
+        cookie = cookie.strip()
+        if not cookie:
+            continue
+        request_headers = dict(headers)
+        request_headers['Cookie'] = cookie
 
-        balance = str(checkin.json()['list'][0]['balance']).split('.')[0]
-        change = str(checkin.json()['list'][0]['change']).split('.')[0]
+        checkin = requests.post(
+            checkin_url, headers=request_headers, json=payload, timeout=20
+        )
+        status = requests.get(status_url, headers=request_headers, timeout=20)
+
+        try:
+            status_body = status.json()
+        except ValueError:
+            raise RuntimeError(
+                'status 接口返回非 JSON：HTTP {}，响应前200字符：{}'.format(
+                    status.status_code, status.text[:200]
+                )
+            )
+        if status.status_code != 200 or status_body.get('code') != 0 or 'data' not in status_body:
+            raise RuntimeError(
+                'status 接口未认证或接口异常：HTTP {}，返回：{}'.format(
+                    status.status_code, json.dumps(status_body, ensure_ascii=False)[:500]
+                )
+            )
+        status_data = status_body['data']
+        days = str(status_data.get('leftDays', '')).split('.')[0]
+        email = status_data.get('email', '未知账号')
+
+        try:
+            checkin_body = checkin.json()
+        except ValueError:
+            checkin_body = {}
+        checkin_list = checkin_body.get('list') or []
+        if not checkin_list:
+            raise RuntimeError(
+                '签到接口异常：HTTP {}，返回：{}'.format(
+                    checkin.status_code, json.dumps(checkin_body, ensure_ascii=False)[:500]
+                )
+            )
+        balance = str(checkin_list[0].get('balance', '')).split('.')[0]
+        change = str(checkin_list[0].get('change', '')).split('.')[0]
 
         if 'message' in checkin.text:
             msg = checkin.json()['message']
@@ -42,11 +81,3 @@ if __name__ == '__main__':
 
     if pkey !='':
         requests.get( 'http://www.pushplus.plus/send?token=' + pkey + '&title=GLaDOS签到情况&content=' + sendmsg)
-
-
-
-
-
-
-
-
