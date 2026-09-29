@@ -1,31 +1,38 @@
-name: 开始每日签到
+name: GLaDOS 每日签到
 
 on:
   workflow_dispatch:
   schedule:
-    # UTC 0点30分(北京时间 8点30分)
-    - cron: 30 0 * * *
-  # 标星时触发工作流程
+    # UTC 00:30，即北京时间 08:30
+    - cron: '30 0 * * *'
   watch:
     types: [started]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  checkin:
+    # Cookie 绑定 Windows 设备，必须使用 Windows Runner
+    runs-on: windows-latest
+    timeout-minutes: 5
+
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python 3.9
-        uses: actions/setup-python@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.9
-      - name: Install requirements
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
-      - name: Run checkin
-        run: |
-          python3 glados.py
-        env: 
-          GLADOS_COOKIES: "${{ secrets.GLADOS_COOKIES }}"
+          python-version: '3.9'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: python -m pip install --upgrade requests
+
+      - name: Run GLaDOS check-in
+        shell: pwsh
+        env:
+          GLADOS_COOKIES: ${{ secrets.GLADOS_COOKIES }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-      - uses: gautamkrishnar/keepalive-workflow@master  
+        run: python glados.py
+
+      - name: Keep workflow alive
+        uses: gautamkrishnar/keepalive-workflow@master
