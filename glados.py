@@ -7,6 +7,7 @@ GLADOS_COOKIES 使用 & 分隔多个完整 Cookie。脚本逐个账号处理，�
 
 import json
 import os
+import sys
 from urllib.parse import urlencode
 
 import requests
@@ -122,4 +123,9 @@ def main():
 
 
 if __name__ == '__main__':
+    # Windows GitHub Runner 可能使用 cp1252，中文日志需切换到 UTF-8。
+    for stream_name in ('stdout', 'stderr'):
+        stream = getattr(sys, stream_name)
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='replace')
     raise SystemExit(main())
