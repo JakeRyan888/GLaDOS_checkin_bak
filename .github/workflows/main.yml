@@ -3,12 +3,14 @@ name: GLaDOS 每日签到
 on:
   workflow_dispatch:
   schedule:
+    # UTC 00:30，即北京时间 08:30
     - cron: '30 0 * * *'
   watch:
     types: [started]
 
 jobs:
   checkin:
+    # Cookie 绑定 Windows 设备，必须使用 Windows Runner
     runs-on: windows-latest
     timeout-minutes: 5
 
@@ -28,6 +30,10 @@ jobs:
       - name: Run GLaDOS check-in
         shell: pwsh
         env:
+          PYTHONUTF8: '1'
           GLADOS_COOKIES: ${{ secrets.GLADOS_COOKIES }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         run: python glados.py
+
+      - name: Keep workflow alive
+        uses: gautamkrishnar/keepalive-workflow@master
