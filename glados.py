@@ -89,13 +89,15 @@ def main():
     if not cookies:
         print('未获取到 GLADOS_COOKIES 环境变量')
         return 0
+    print('GitHub Runner OS: {}'.format(os.environ.get('RUNNER_OS', 'unknown')))
 
     base_headers = {
         'Referer': 'https://glados.cloud/console/checkin',
         'Origin': 'https://glados.cloud',
         'User-Agent': (
-            'Mozilla/5.0 (X11; Linux x86_64) '
-            'AppleWebKit/537.36 Chrome/120.0 Safari/537.36'
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/120.0.0.0 Safari/537.36'
         ),
         'Accept': 'application/json, text/plain, */*',
         'Content-Type': 'application/json; charset=utf-8',
