@@ -8,7 +8,6 @@ GLADOS_COOKIES 使用 & 分隔多个完整 Cookie。脚本逐个账号处理，�
 import json
 import os
 import sys
-from urllib.parse import urlencode
 
 import requests
 
@@ -17,6 +16,64 @@ CHECKIN_URL = 'https://glados.cloud/api/user/checkin'
 STATUS_URL = 'https://glados.cloud/api/user/status'
 PUSHPLUS_URL = 'https://www.pushplus.plus/send'
 TIMEOUT = 20
+BROWSER_HEADER_NAMES = frozenset({
+    'accept-language',
+    'sec-ch-ua',
+    'sec-ch-ua-mobile',
+    'sec-ch-ua-platform',
+    'sec-ch-ua-full-version',
+    'sec-ch-ua-full-version-list',
+    'sec-ch-ua-platform-version',
+    'sec-ch-ua-arch',
+    'sec-ch-ua-bitness',
+    'sec-ch-ua-model',
+    'sec-ch-ua-wow64',
+})
+
+
+def validate_header_value(value):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError('浏览器请求头必须是非空字符串')
+    if value[0].isspace():
+        raise ValueError('浏览器请求头不能以空白字符开头')
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError('浏览器请求头不能包含换行或控制字符')
+    try:
+        value.encode('latin-1')
+    except UnicodeEncodeError:
+        raise ValueError('浏览器请求头包含不支持的字符') from None
+
+
+def build_headers():
+    user_agent = os.environ.get('GLADOS_USER_AGENT', '')
+    if not user_agent.strip():
+        raise ValueError('请设置 GLADOS_USER_AGENT，使用获取 Cookie 的浏览器的完整 User-Agent')
+    validate_header_value(user_agent)
+    headers = {
+        'Referer': 'https://glados.cloud/console/checkin',
+        'Origin': 'https://glados.cloud',
+        'User-Agent': user_agent.strip(),
+        'Accept': 'application/json, text/plain, */*',
+        'Content-Type': 'application/json; charset=utf-8',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Dest': 'empty',
+    }
+    raw_headers = os.environ.get('GLADOS_BROWSER_HEADERS', '').strip()
+    if raw_headers:
+        try:
+            browser_headers = json.loads(raw_headers)
+        except ValueError:
+            raise ValueError('GLADOS_BROWSER_HEADERS 必须是有效的 JSON 对象') from None
+        if not isinstance(browser_headers, dict):
+            raise ValueError('GLADOS_BROWSER_HEADERS 必须是 JSON 对象')
+        for name, value in browser_headers.items():
+            name = name.lower()
+            if name not in BROWSER_HEADER_NAMES:
+                raise ValueError('GLADOS_BROWSER_HEADERS 包含不支持的请求头，请只填写 Client Hints 和 Accept-Language')
+            validate_header_value(value)
+            headers[name] = value
+    return headers
 
 
 def parse_json(response):
@@ -89,19 +146,12 @@ def main():
     if not cookies:
         print('未获取到 GLADOS_COOKIES 环境变量')
         return 0
+    try:
+        base_headers = build_headers()
+    except ValueError as exc:
+        print('浏览器配置错误：{}'.format(exc))
+        return 1
     print('GitHub Runner OS: {}'.format(os.environ.get('RUNNER_OS', 'unknown')))
-
-    base_headers = {
-        'Referer': 'https://glados.cloud/console/checkin',
-        'Origin': 'https://glados.cloud',
-        'User-Agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/120.0.0.0 Safari/537.36'
-        ),
-        'Accept': 'application/json, text/plain, */*',
-        'Content-Type': 'application/json; charset=utf-8',
-    }
 
     messages = []
     with requests.Session() as session:
