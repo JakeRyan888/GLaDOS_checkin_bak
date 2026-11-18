@@ -1,9 +1,4 @@
-# -*- coding: utf-8 -*-
-"""GLaDOS GitHub Actions 签到脚本。
-
-GLADOS_COOKIES 使用 & 分隔多个完整 Cookie。脚本逐个账号处理，单个账号
-失败不会阻断其它账号，并把服务端业务错误发送到 PushPlus。
-"""
+"""Run GLaDOS's official browser check-in flow for isolated accounts."""
 
 import json
 import os
@@ -11,23 +6,17 @@ import sys
 
 import requests
 
+from browser_checkin import BrowserCheckin
 
-CHECKIN_URL = 'https://glados.cloud/api/user/checkin'
-STATUS_URL = 'https://glados.cloud/api/user/status'
+
 PUSHPLUS_URL = 'https://www.pushplus.plus/send'
 TIMEOUT = 20
+ALLOWED_ORIGINS = {'https://glados.rocks', 'https://glados.cloud'}
 BROWSER_HEADER_NAMES = frozenset({
-    'accept-language',
-    'sec-ch-ua',
-    'sec-ch-ua-mobile',
-    'sec-ch-ua-platform',
-    'sec-ch-ua-full-version',
-    'sec-ch-ua-full-version-list',
-    'sec-ch-ua-platform-version',
-    'sec-ch-ua-arch',
-    'sec-ch-ua-bitness',
-    'sec-ch-ua-model',
-    'sec-ch-ua-wow64',
+    'accept-language', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform',
+    'sec-ch-ua-full-version', 'sec-ch-ua-full-version-list',
+    'sec-ch-ua-platform-version', 'sec-ch-ua-arch', 'sec-ch-ua-bitness',
+    'sec-ch-ua-model', 'sec-ch-ua-wow64',
 })
 
 
@@ -44,20 +33,24 @@ def validate_header_value(value):
         raise ValueError('浏览器请求头包含不支持的字符') from None
 
 
+def get_base_url():
+    base_url = os.environ.get('GLADOS_BASE_URL', 'https://glados.rocks').rstrip('/')
+    if base_url not in ALLOWED_ORIGINS:
+        raise ValueError('GLADOS_BASE_URL 仅支持 https://glados.rocks 或 https://glados.cloud')
+    return base_url
+
+
 def build_headers():
     user_agent = os.environ.get('GLADOS_USER_AGENT', '')
     if not user_agent.strip():
         raise ValueError('请设置 GLADOS_USER_AGENT，使用获取 Cookie 的浏览器的完整 User-Agent')
     validate_header_value(user_agent)
+    base_url = get_base_url()
     headers = {
-        'Referer': 'https://glados.cloud/console/checkin',
-        'Origin': 'https://glados.cloud',
-        'User-Agent': user_agent.strip(),
-        'Accept': 'application/json, text/plain, */*',
+        'Referer': base_url + '/console/checkin', 'Origin': base_url,
+        'User-Agent': user_agent.strip(), 'Accept': 'application/json, text/plain, */*',
         'Content-Type': 'application/json; charset=utf-8',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty',
     }
     raw_headers = os.environ.get('GLADOS_BROWSER_HEADERS', '').strip()
     if raw_headers:
@@ -70,112 +63,85 @@ def build_headers():
         for name, value in browser_headers.items():
             name = name.lower()
             if name not in BROWSER_HEADER_NAMES:
-                raise ValueError('GLADOS_BROWSER_HEADERS 包含不支持的请求头，请只填写 Client Hints 和 Accept-Language')
+                raise ValueError('GLADOS_BROWSER_HEADERS 只允许 Client Hints 和 Accept-Language')
             validate_header_value(value)
             headers[name] = value
     return headers
 
 
-def parse_json(response):
+def read_bool(name, default=False):
+    value = os.environ.get(name, str(default)).lower()
+    if value not in {'true', 'false', '1', '0'}:
+        raise ValueError(f'{name} 必须为 true 或 false')
+    return value in {'true', '1'}
+
+
+def browser_options(headers):
+    channel = os.environ.get('GLADOS_BROWSER_CHANNEL', 'chrome')
+    if channel not in {'chrome', 'msedge', 'chromium'}:
+        raise ValueError('GLADOS_BROWSER_CHANNEL 必须为 chrome、msedge 或 chromium')
     try:
-        return response.json()
+        timeout = int(os.environ.get('GLADOS_BROWSER_TIMEOUT', '120'))
     except ValueError:
-        return {}
-
-
-def status_account(session, headers):
-    response = session.get(STATUS_URL, headers=headers, timeout=TIMEOUT)
-    body = parse_json(response)
-    if response.status_code != 200 or body.get('code') != 0 or not body.get('data'):
-        raise RuntimeError(
-            'status失败 HTTP={} code={} reason={} message={}'.format(
-                response.status_code,
-                body.get('code', '未知'),
-                body.get('reason', ''),
-                body.get('message', ''),
-            )
-        )
-    data = body['data']
-    return data.get('email', '未知账号'), str(data.get('leftDays', '未知')).split('.')[0]
-
-
-def checkin_account(session, headers):
-    response = session.post(
-        CHECKIN_URL,
-        headers=headers,
-        json={'token': 'glados.cloud'},
-        timeout=TIMEOUT,
-    )
-    body = parse_json(response)
-    checkin_list = body.get('list') or []
-    if checkin_list:
-        item = checkin_list[0]
-        return '{}|积分：{}|变化：{}'.format(
-            body.get('message', '签到成功'),
-            str(item.get('balance', '')).split('.')[0],
-            str(item.get('change', '')).split('.')[0],
-        )
-
-    reason = body.get('message') or body.get('reason') or '未知错误'
-    if body.get('reason') == 'device-mismatch':
-        reason = '设备不匹配：登录设备={}，运行设备={}。请重新登录或更换 Runner。'.format(
-            body.get('loginDevice', '未知'), body.get('currentDevice', '未知')
-        )
-    return '签到失败：{} (HTTP {} code {})'.format(
-        reason, response.status_code, body.get('code', '未知')
-    )
+        raise ValueError('GLADOS_BROWSER_TIMEOUT 必须为 30 至 180 的整数秒数') from None
+    if not 30 <= timeout <= 180:
+        raise ValueError('GLADOS_BROWSER_TIMEOUT 必须为 30 至 180 的整数秒数')
+    return {
+        'base_url': get_base_url(), 'user_agent': headers['User-Agent'],
+        'extra_headers': {name: value for name, value in headers.items()
+                          if name.lower() in BROWSER_HEADER_NAMES},
+        'headless': read_bool('GLADOS_HEADLESS'), 'channel': channel, 'timeout': timeout,
+    }
 
 
 def push_message(token, content):
     if not token or not content:
         return
     try:
-        requests.get(
-            PUSHPLUS_URL,
-            params={'token': token, 'title': 'GLaDOS签到情况', 'content': content},
-            timeout=TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        print('PushPlus 推送失败：{}'.format(exc))
+        requests.get(PUSHPLUS_URL,
+                     params={'token': token, 'title': 'GLaDOS签到情况', 'content': content},
+                     timeout=TIMEOUT, allow_redirects=False)
+    except requests.RequestException:
+        # Exception text can include the token-bearing query string.
+        print('PushPlus 推送失败，请检查网络与通知配置')
 
 
 def main():
-    push_token = os.environ.get('PUSHPLUS_TOKEN', '')
-    raw_cookies = os.environ.get('GLADOS_COOKIES', '')
-    cookies = [item.strip() for item in raw_cookies.split('&') if item.strip()]
+    cookies = [cookie.strip() for cookie in os.environ.get('GLADOS_COOKIES', '').split('&') if cookie.strip()]
     if not cookies:
         print('未获取到 GLADOS_COOKIES 环境变量')
-        return 0
-    try:
-        base_headers = build_headers()
-    except ValueError as exc:
-        print('浏览器配置错误：{}'.format(exc))
         return 1
-    print('GitHub Runner OS: {}'.format(os.environ.get('RUNNER_OS', 'unknown')))
-
+    try:
+        options = browser_options(build_headers())
+        status_only = read_bool('GLADOS_STATUS_ONLY')
+    except ValueError as exc:
+        print(f'浏览器配置错误：{exc}')
+        return 1
     messages = []
-    with requests.Session() as session:
-        for index, cookie in enumerate(cookies, 1):
-            headers = dict(base_headers)
-            headers['Cookie'] = cookie
-            try:
-                email, days = status_account(session, headers)
-                result = checkin_account(session, headers)
-                message = '{}|剩余：{}天|{}'.format(email, days, result)
-            except requests.RequestException as exc:
-                message = 'Cookie{}|网络请求失败：{}'.format(index, exc)
-            except Exception as exc:
-                message = 'Cookie{}|{}'.format(index, exc)
-            print(message)
-            messages.append(message)
-
-    push_message(push_token, '\n'.join(messages))
-    # 服务端业务失败已经被记录和推送，不让单个账号失败阻断整个 Action。
-    return 0
+    failed = False
+    try:
+        with BrowserCheckin(**options) as runner:
+            for index, cookie in enumerate(cookies, 1):
+                try:
+                    result = runner.checkin(cookie, status_only=status_only)
+                    account = result.email or f'Cookie{index}'
+                    message = f'{account}|剩余：{result.days}天|{result.message}'
+                    failed = failed or not result.ok
+                except Exception:
+                    # Preserve account isolation without logging credential-bearing exceptions.
+                    message = f'Cookie{index}|执行失败；请核对浏览器环境，未自动重试'
+                    failed = True
+                print(message, flush=True)
+                messages.append(message)
+    except Exception:
+        print('浏览器启动或运行失败；请安装 requirements.txt 和对应浏览器，并检查可用桌面环境')
+        failed = True
+    if not status_only:
+        push_message(os.environ.get('PUSHPLUS_TOKEN', ''), '\n'.join(messages))
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':
-    # Windows GitHub Runner 可能使用 cp1252，中文日志需切换到 UTF-8。
     for stream_name in ('stdout', 'stderr'):
         stream = getattr(sys, stream_name)
         if hasattr(stream, 'reconfigure'):

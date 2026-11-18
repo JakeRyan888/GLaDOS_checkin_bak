@@ -2,16 +2,21 @@ name: GLaDOS 每日签到
 
 on:
   workflow_dispatch:
+    inputs:
+      status_only:
+        description: '只读检查登录状态，不提交签到'
+        type: boolean
+        default: false
   schedule:
-    # UTC 00:30，即北京时间 08:30
+    # UTC 00:00，即北京时间 08:00；实际任务时间以 .github/workflows/main.yml 为准。
     - cron: 0 0 * * *
   
 
 jobs:
   checkin:
-    # 沿用 Windows Runner；配置 UA 不会改变 Runner 的实际环境。
+    # Windows 镜像自带 Chrome；不使用脚本覆盖安装系统浏览器。
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -20,11 +25,16 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
       - name: Install dependencies
         shell: pwsh
-        run: python -m pip install --upgrade requests
+        run: python -m pip install -r requirements.txt
+
+      - name: Install Chromium when selected
+        if: ${{ vars.GLADOS_BROWSER_CHANNEL == 'chromium' }}
+        shell: pwsh
+        run: python -m playwright install chromium
 
       - name: Run offline tests
         shell: pwsh
@@ -35,10 +45,16 @@ jobs:
       - name: Run GLaDOS check-in
         shell: pwsh
         env:
+          PYTHONUTF8: '1'
           GLADOS_COOKIES: ${{ secrets.GLADOS_COOKIES }}
           GLADOS_USER_AGENT: ${{ secrets.GLADOS_USER_AGENT }}
           GLADOS_BROWSER_HEADERS: ${{ secrets.GLADOS_BROWSER_HEADERS }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          GLADOS_BASE_URL: ${{ vars.GLADOS_BASE_URL || 'https://glados.rocks' }}
+          GLADOS_BROWSER_CHANNEL: ${{ vars.GLADOS_BROWSER_CHANNEL || 'chrome' }}
+          GLADOS_HEADLESS: ${{ vars.GLADOS_HEADLESS || 'false' }}
+          GLADOS_BROWSER_TIMEOUT: ${{ vars.GLADOS_BROWSER_TIMEOUT || '120' }}
+          GLADOS_STATUS_ONLY: ${{ inputs.status_only && 'true' || vars.GLADOS_STATUS_ONLY || 'false' }}
         run: python glados.py
 
       - name: Keep workflow alive
