@@ -17,28 +17,48 @@ class AccountResult:
     unknown: bool = False
 
 
-STATUS_SCRIPT = """async () => {
+class CheckinError(ValueError):
+    """A locally generated error whose message is safe to display."""
+
+
+STATUS_SCRIPT = """async ({origin, timeoutMs}) => {
+    if (location.origin !== origin) {
+        return {failure: 'origin'};
+    }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let http = null;
     try {
         const response = await fetch('/api/user/status', {
-            credentials: 'same-origin', signal: controller.signal
+            credentials: 'same-origin', redirect: 'manual', signal: controller.signal
         });
+        http = response.status;
+        if (response.type === 'opaqueredirect') {
+            return {failure: 'redirect'};
+        }
+        if (response.headers.get('cf-mitigated') === 'challenge') {
+            return {http, failure: 'challenge'};
+        }
         let body;
         try {
             body = await response.json();
-        } catch (_) {
-            return {http: response.status, invalid: true};
+        } catch (error) {
+            if (error.name !== 'SyntaxError') {
+                throw error;
+            }
+            return {http, invalid: true};
         }
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
-            return {http: response.status, invalid: true};
+            return {http, invalid: true};
         }
         return {
-            http: response.status,
+            http,
             code: body.code,
             email: body.data && body.data.email,
             leftDays: body.data && body.data.leftDays
         };
+    } catch (_) {
+        return {http, failure: controller.signal.aborted ? 'timeout' : 'network'};
     } finally {
         clearTimeout(timer);
     }
@@ -76,7 +96,7 @@ def _cookies(raw, base_url):
             or any(ord(char) < 33 or ord(char) == 127 for char in name)
             or any(ord(char) < 32 or ord(char) == 127 for char in value)
         ):
-            raise ValueError('Cookie 格式无效，请重新复制完整请求中的 Cookie')
+            raise CheckinError('Cookie 格式无效，请重新复制完整请求中的 Cookie')
         names.add(name)
         cookies.append({
             'name': name,
@@ -85,7 +105,7 @@ def _cookies(raw, base_url):
             'secure': True,
         })
     if not {'gld:sess', 'gld:sess.sig'}.issubset(names):
-        raise ValueError('Cookie 缺少新版登录会话字段，请重新登录并复制完整 Cookie')
+        raise CheckinError('Cookie 缺少新版登录会话字段，请重新登录并复制完整 Cookie')
     return cookies
 
 
@@ -193,9 +213,11 @@ class BrowserCheckin:
         route.fallback()
 
     def _status(self, page):
-        status = page.evaluate(STATUS_SCRIPT)
+        status = page.evaluate(STATUS_SCRIPT, {
+            'origin': self.base_url, 'timeoutMs': self.timeout_ms,
+        })
         if not isinstance(status, dict):
-            raise ValueError('状态响应格式无效 HTTP=未知 code=未知，未提交签到')
+            raise CheckinError('状态响应格式无效 HTTP=未知 code=未知，未提交签到')
         http = status.get('http')
         code = status.get('code')
         http_label = http if type(http) is int and 100 <= http <= 599 else '未知'
@@ -203,20 +225,31 @@ class BrowserCheckin:
             type(code) is int or (type(code) is float and math.isfinite(code))
         ) else '未知'
         evidence = f'HTTP={http_label} code={code_label}'
+        failure = status.get('failure')
+        if failure == 'origin':
+            raise CheckinError('登录状态查询前页面已离开配置域名，未提交签到')
+        if failure == 'redirect':
+            raise CheckinError('状态接口重定向，请核对配置域名和登录页面，未提交签到')
+        if failure == 'challenge':
+            raise CheckinError(f'状态查询遇到 Cloudflare 验证（{evidence}），未提交签到')
+        if failure == 'timeout':
+            raise CheckinError(f'状态接口读取超时（{evidence}），未提交签到')
+        if failure == 'network':
+            raise CheckinError(f'状态接口网络请求失败（{evidence}），未提交签到')
         if type(http) is not int or http != 200:
-            raise ValueError(f'状态查询失败 {evidence}，无法确认登录状态，未提交签到')
+            raise CheckinError(f'状态查询失败 {evidence}，无法确认登录状态，未提交签到')
         if status.get('invalid') is True:
-            raise ValueError(f'状态响应格式无效 {evidence}，未提交签到')
+            raise CheckinError(f'状态响应格式无效 {evidence}，未提交签到')
         if not _zero(code):
             if type(code) in (int, float) and code == -2:
-                raise ValueError(f'status失败 {evidence} 登录会话未获授权，请更新当前域名对应的完整 Cookie')
-            raise ValueError(f'状态查询失败 {evidence}，未提交签到')
+                raise CheckinError(f'status失败 {evidence} 登录会话未获授权，请更新当前域名对应的完整 Cookie')
+            raise CheckinError(f'状态查询失败 {evidence}，未提交签到')
         if (
             not isinstance(status.get('email'), str)
             or '@' not in status['email']
             or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in status['email'])
         ):
-            raise ValueError(f'状态响应身份字段缺失或无效 {evidence}，未提交签到')
+            raise CheckinError(f'状态响应身份字段缺失或无效 {evidence}，未提交签到')
         return status
 
     @staticmethod
@@ -250,10 +283,11 @@ class BrowserCheckin:
         result = AccountResult()
         context = None
         state = {'armed': False, 'submitted': False, 'blocked': ''}
+        stage = '准备浏览器会话'
         try:
             cookies = _cookies(cookie, self.base_url)
             if self.browser is None:
-                raise ValueError('浏览器尚未启动')
+                raise CheckinError('浏览器尚未启动')
             context = self.browser.new_context(
                 user_agent=self.user_agent,
                 extra_http_headers=self.extra_headers,
@@ -264,26 +298,39 @@ class BrowserCheckin:
             context.route(re.compile(r'^https?://[^/]+/api/user/checkin'),
                           lambda route: self._guard(route, state))
             page = context.new_page()
-            page.goto(self.base_url + '/console/checkin', wait_until='domcontentloaded')
+            stage = '加载签到页面'
+            navigation = page.goto(self.base_url + '/console/checkin', wait_until='domcontentloaded')
             current = urlsplit(page.url)
             if current.scheme + '://' + current.netloc != self.base_url:
-                raise ValueError('页面跳转到其他域名，已停止签到')
+                raise CheckinError('签到页面跳转到其他域名，未提交签到')
+            if navigation is None:
+                raise CheckinError('签到页面没有返回 HTTP 响应，未提交签到')
+            if navigation.header_value('cf-mitigated') == 'challenge':
+                raise CheckinError(f'签到页面遇到 Cloudflare 验证（HTTP={navigation.status}），未提交签到')
+            if not navigation.ok:
+                raise CheckinError(f'签到页面加载失败（HTTP={navigation.status}），未提交签到')
+            stage = '查询登录状态'
             status = self._status(page)
-            if state['blocked']:
-                raise ValueError('页面提前尝试提交签到，已停止本账号处理')
             result.email = status['email']
             result.days = _number(status.get('leftDays'))
             if expected_email is not None and result.email != expected_email:
-                raise ValueError('浏览器账号与预期账号不一致，已停止签到')
+                raise CheckinError('浏览器账号与预期账号不一致，未提交签到')
+            if state['blocked']:
+                raise CheckinError(state['blocked'])
             if status_only:
                 result.ok = True
                 result.message = '只读检查通过（未提交签到）'
                 return result
+            stage = '等待签到按钮'
             button = page.locator('button.ckb')
             button.wait_for(state='visible')
+            stage = '复核登录状态'
             if self._status(page)['email'] != result.email:
-                raise ValueError('浏览器账号在提交前发生变化，已停止签到')
+                raise CheckinError('浏览器账号在提交前发生变化，未提交签到')
+            if state['blocked']:
+                raise CheckinError(state['blocked'])
             state['armed'] = True
+            stage = '点击签到按钮'
             # The response event only means headers arrived. Observe completion
             # before clicking too, so a stalled body is bounded by the same wait.
             with page.expect_event('requestfinished', predicate=self._matches,
@@ -291,22 +338,22 @@ class BrowserCheckin:
                 with page.expect_response(lambda response: self._matches(response.request),
                                           timeout=self.timeout_ms) as captured:
                     button.click()
+                    stage = '等待官网验证和签到响应'
             result.submitted = state['submitted']
             if not result.submitted:
-                raise ValueError('未观察到获准的签到请求')
+                raise CheckinError('未观察到获准的签到请求')
             return self._response(result, captured.value)
-        except ValueError as exc:
-            result.message = state['blocked'] or str(exc)
-            if state['submitted']:
-                result.unknown = True
-                result.message = '签到请求已提交，但响应无效或读取失败，结果未知；请核对官网记录，不自动重试'
-            return result
-        except Exception:
+        except Exception as exc:
             result.unknown = state['submitted']
-            result.message = state['blocked'] or (
-                '签到请求已提交，但未获得明确响应，结果未知；请核对官网记录，不自动重试'
-                if result.unknown else '浏览器页面或验证未能完成，未提交签到；请在浏览器中检查验证状态'
-            )
+            if result.unknown:
+                result.message = '签到请求已提交，但未获得明确响应，结果未知。请核对官网记录'
+            elif state['blocked']:
+                result.message = state['blocked']
+            elif isinstance(exc, CheckinError):
+                result.message = str(exc)
+            else:
+                problem = '超时' if type(exc).__name__ == 'TimeoutError' else '失败'
+                result.message = f'{stage}{problem}，未提交签到'
             return result
         finally:
             result.submitted = state['submitted']

@@ -15,13 +15,16 @@ UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
 
 class FixtureBrowser:
     def __init__(self, browser, *, verification='ok', duplicate=False, failure=False,
-                 invalid_json=False, auth_failure=False):
+                 invalid_json=False, auth_failure=False, navigation_challenge=False,
+                 status_redirect=False):
         self.browser = browser
         self.verification = verification
         self.duplicate = duplicate
         self.failure = failure
         self.invalid_json = invalid_json
         self.auth_failure = auth_failure
+        self.navigation_challenge = navigation_challenge
+        self.status_redirect = status_redirect
         self.posts = []
         self.status_cookies = []
         self.closed = []
@@ -38,6 +41,11 @@ class FixtureBrowser:
         path = urlsplit(request.url).path
         headers = {'Content-Type': 'application/json'}
         if path == '/console/checkin':
+            if self.navigation_challenge:
+                route.fulfill(status=403, headers={
+                    'Content-Type': 'text/html', 'cf-mitigated': 'challenge',
+                }, body='<html><title>Verification required</title></html>')
+                return
             html = '''<!doctype html><meta charset="utf-8"><button class="ckb">签到</button>
             <script>
             document.querySelector('button.ckb').onclick = async () => {
@@ -57,6 +65,10 @@ class FixtureBrowser:
         if path == '/api/user/status':
             cookie = request.headers.get('cookie', '')
             self.status_cookies.append(cookie)
+            if self.status_redirect:
+                # Keep this fixture off external hosts even if redirects are followed.
+                route.fulfill(status=302, headers={'Location': 'http://127.0.0.1:1/fixture-login'}, body='')
+                return
             email = 'two@example.test' if 'session-two' in cookie else 'one@example.test'
             body = {'code': -2} if self.auth_failure else {
                 'code': 0, 'data': {'email': email, 'leftDays': '273.75'},
@@ -127,6 +139,25 @@ class RealBrowserFlowTests(unittest.TestCase):
         runner, fixture = self.runner()
         result = runner.checkin(COOKIE, expected_email='other@example.test')
         self.assertFalse(result.ok or result.submitted or result.unknown)
+        self.assertEqual(fixture.posts, [])
+        self.assertEqual(fixture.challenge_count, 0)
+
+    def test_console_cloudflare_challenge_stops_before_status_or_submission(self):
+        runner, fixture = self.runner(navigation_challenge=True)
+        result = runner.checkin(COOKIE)
+        self.assertFalse(result.ok or result.submitted or result.unknown)
+        self.assertIn('签到页面', result.message)
+        self.assertIn('HTTP=403', result.message)
+        self.assertIn('Cloudflare 验证', result.message)
+        self.assertEqual(fixture.status_cookies, [])
+        self.assertEqual(fixture.posts, [])
+
+    def test_status_redirect_stops_before_challenge_or_submission(self):
+        runner, fixture = self.runner(status_redirect=True)
+        result = runner.checkin(COOKIE)
+        self.assertFalse(result.ok or result.submitted or result.unknown)
+        self.assertIn('状态接口重定向', result.message)
+        self.assertEqual(len(fixture.status_cookies), 1)
         self.assertEqual(fixture.posts, [])
         self.assertEqual(fixture.challenge_count, 0)
 

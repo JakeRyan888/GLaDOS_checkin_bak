@@ -28,6 +28,9 @@ def browser_fixture(body=None, http=200, statuses=None, outgoing=None,
     context = Mock()
     page = Mock()
     page.url = BASE + '/console/checkin'
+    page.goto.return_value = SimpleNamespace(
+        status=200, ok=True, header_value=Mock(return_value=None),
+    )
     page.evaluate.side_effect = statuses or [dict(STATUS), dict(STATUS)]
     context.new_page.return_value = page
     runner.browser.new_context.return_value = context
@@ -128,6 +131,23 @@ class BrowserCheckinTests(unittest.TestCase):
         self.assertFalse(routes)
         context.close.assert_called_once()
 
+    def test_browser_failures_report_separate_stages_without_raw_errors(self):
+        for operation, error, message in (
+            ('goto', TimeoutError('private-navigation'), '加载签到页面超时'),
+            ('evaluate', ValueError('private-status'), '查询登录状态失败'),
+        ):
+            with self.subTest(operation=operation):
+                runner, context, page, _, routes = browser_fixture()
+                getattr(page, operation).side_effect = error
+                result = runner.checkin(COOKIE)
+                self.assertIn(message, result.message)
+                self.assertIn('未提交签到', result.message)
+                self.assertNotIn('private-', result.message)
+                self.assertFalse(result.ok or result.submitted or result.unknown)
+                page.locator.assert_not_called()
+                self.assertEqual(routes, [])
+                context.close.assert_called_once()
+
     def test_status_errors_distinguish_authorization_http_and_identity(self):
         cases = [
             ({'http': 200, 'code': -2}, 'HTTP=200 code=-2', '登录会话未获授权'),
@@ -137,6 +157,9 @@ class BrowserCheckinTests(unittest.TestCase):
             ({'http': 200, 'code': 0, 'email': 'private-email'},
              'HTTP=200 code=0', '身份字段缺失或无效'),
             ({'http': 200, 'invalid': True}, 'HTTP=200 code=未知', '响应格式无效'),
+            ({'http': 403, 'failure': 'challenge'}, 'HTTP=403 code=未知', 'Cloudflare 验证'),
+            ({'http': 200, 'failure': 'timeout'}, 'HTTP=200 code=未知', '读取超时'),
+            ({'failure': 'network'}, 'HTTP=未知 code=未知', '网络请求失败'),
             ({'http': 403, 'invalid': True}, 'HTTP=403 code=未知', '无法确认登录状态'),
             ({'http': 'private-http', 'code': 'private-code'},
              'HTTP=未知 code=未知', '无法确认登录状态'),
