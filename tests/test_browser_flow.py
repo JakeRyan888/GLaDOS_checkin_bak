@@ -11,6 +11,8 @@ BASE = 'https://glados.rocks'
 COOKIE = 'gld:sess=session-one; gld:sess.sig=fixture-signature'
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36')
+# A cold Chrome instance on a hosted runner can take more than two seconds.
+BROWSER_TEST_TIMEOUT_SECONDS = 15
 
 
 class FixtureBrowser:
@@ -109,7 +111,7 @@ class RealBrowserFlowTests(unittest.TestCase):
 
     def runner(self, **scenario):
         fixture = FixtureBrowser(self.browser, **scenario)
-        runner = BrowserCheckin(BASE, UA, headless=True, timeout=2)
+        runner = BrowserCheckin(BASE, UA, headless=True, timeout=BROWSER_TEST_TIMEOUT_SECONDS)
         runner.browser = fixture
         return runner, fixture
 
@@ -165,13 +167,15 @@ class RealBrowserFlowTests(unittest.TestCase):
         runner, fixture = self.runner(verification='timeout', duplicate=True)
         result = runner.checkin(COOKIE)
         self.assertFalse(result.ok or result.submitted or result.unknown)
+        self.assertIn('官网验证未完成', result.message)
+        self.assertEqual(fixture.challenge_count, 1)
         self.assertEqual(fixture.posts, [])
 
     def test_business_rejection_with_history_is_failure(self):
         runner, fixture = self.runner(failure=True)
         result = runner.checkin(COOKIE)
-        self.assertFalse(result.ok or result.unknown)
-        self.assertTrue(result.submitted)
+        self.assertTrue(result.submitted, result.message)
+        self.assertFalse(result.ok or result.unknown, result.message)
         self.assertEqual(len(fixture.posts), 1)
         self.assertIn('Turnstile', result.message)
         self.assertNotIn('795', result.message)
@@ -179,8 +183,8 @@ class RealBrowserFlowTests(unittest.TestCase):
     def test_invalid_response_is_unknown_without_retry(self):
         runner, fixture = self.runner(invalid_json=True, duplicate=True)
         result = runner.checkin(COOKIE)
-        self.assertFalse(result.ok)
-        self.assertTrue(result.submitted and result.unknown)
+        self.assertFalse(result.ok, result.message)
+        self.assertTrue(result.submitted and result.unknown, result.message)
         self.assertEqual(len(fixture.posts), 1)
 
 
