@@ -310,9 +310,17 @@ class BrowserCheckin:
             )
             context.set_default_timeout(self.timeout_ms)
             context.add_cookies(cookies)
-            context.route(re.compile(r'^https?://[^/]+/api/user/checkin'),
-                          lambda route: self._guard(route, state))
             page = context.new_page()
+
+            def guard(route):
+                was_armed = state['armed']
+                self._guard(route, state)
+                if was_armed and state['blocked'] and not state['submitted']:
+                    # This page belongs to this account attempt. Closing it wakes
+                    # the response wait after a locally rejected request.
+                    page.close()
+
+            context.route(re.compile(r'^https?://[^/]+/api/user/checkin'), guard)
             stage = '加载签到页面'
             navigation = page.goto(self.base_url + '/console/checkin', wait_until='domcontentloaded')
             current = urlsplit(page.url)

@@ -92,6 +92,7 @@ class BrowserCheckinTests(unittest.TestCase):
         context.close.assert_called_once()
         page.locator.assert_called_once_with('button.ckb')
         page.locator.return_value.click.assert_called_once()
+        page.close.assert_not_called()
         routes[0].fallback.assert_called_once()
 
     def test_context_is_new_for_every_account_and_headers_do_not_leak_cookies(self):
@@ -207,12 +208,13 @@ class BrowserCheckinTests(unittest.TestCase):
         )
         for payload, message in cases:
             with self.subTest(payload=payload):
-                runner, _, _, _, routes = browser_fixture(outgoing=[request(payload)])
+                runner, _, page, _, routes = browser_fixture(outgoing=[request(payload)])
                 result = runner.checkin(COOKIE)
                 self.assertFalse(result.ok or result.submitted or result.unknown)
                 self.assertIn(message, result.message)
                 self.assertIn('未提交', result.message)
                 self.assertNotIn('private', result.message)
+                page.close.assert_called_once_with()
                 routes[0].abort.assert_called_once()
                 routes[0].fallback.assert_not_called()
 
