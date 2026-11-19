@@ -109,6 +109,29 @@ def _cookies(raw, base_url):
     return cookies
 
 
+def _verification_issue(payload, hostname):
+    if not isinstance(payload, dict):
+        return '官网签到请求格式不符'
+    if payload.get('token') != hostname:
+        return '官网签到请求与配置域名不符'
+
+    state = payload.get('tsState')
+    if state == 'timeout':
+        return '官网验证未完成（页面报告超时）'
+    if state == 'error':
+        return '官网验证未完成（页面报告错误）'
+    if state not in ('ok', 'off'):
+        return '官网签到请求缺少有效的验证状态'
+    if not all(isinstance(payload.get(field), str) and payload[field]
+               for field in ('nonce', 'proof')):
+        return '官网签到请求缺少必要的确认字段'
+    if state == 'ok' and (
+        not isinstance(payload.get('turnstile'), str) or not payload['turnstile']
+    ):
+        return '官网报告验证完成，但签到请求缺少验证结果'
+    return None
+
+
 class BrowserCheckin:
     def __init__(self, base_url, user_agent, extra_headers=None, headless=False,
                  channel='chrome', timeout=120):
@@ -192,18 +215,10 @@ class BrowserCheckin:
             payload = request.post_data_json
         except Exception:
             payload = None
-        if (
-            not isinstance(payload, dict)
-            or payload.get('token') != urlsplit(self.base_url).hostname
-            or not isinstance(payload.get('nonce'), str) or not payload['nonce']
-            or not isinstance(payload.get('proof'), str) or not payload['proof']
-            or payload.get('tsState') not in ('ok', 'off')
-            or (payload.get('tsState') == 'ok' and (
-                not isinstance(payload.get('turnstile'), str) or not payload['turnstile']
-            ))
-        ):
+        issue = _verification_issue(payload, urlsplit(self.base_url).hostname)
+        if issue:
             state['armed'] = False
-            state['blocked'] = '官网验证未完成或请求格式已变化，未提交签到；请在浏览器中完成验证'
+            state['blocked'] = f'{issue}，未提交签到'
             route.abort()
             return
         # Count the allowed attempt before handing it to the network. Any later

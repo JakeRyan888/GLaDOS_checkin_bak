@@ -167,7 +167,7 @@ class RealBrowserFlowTests(unittest.TestCase):
         runner, fixture = self.runner(verification='timeout', duplicate=True)
         result = runner.checkin(COOKIE)
         self.assertFalse(result.ok or result.submitted or result.unknown)
-        self.assertIn('官网验证未完成', result.message)
+        self.assertIn('官网验证未完成（页面报告超时）', result.message)
         self.assertEqual(fixture.challenge_count, 1)
         self.assertEqual(fixture.posts, [])
 

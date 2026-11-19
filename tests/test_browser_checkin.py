@@ -195,16 +195,22 @@ class BrowserCheckinTests(unittest.TestCase):
                 context.close.assert_called_once()
 
     def test_failed_or_missing_verification_never_reaches_network(self):
-        for payload in ({**PAYLOAD, 'tsState': 'timeout'},
-                        {**PAYLOAD, 'tsState': 'error'},
-                        {**PAYLOAD, 'turnstile': ''},
-                        {'token': 'glados.rocks'},
-                        {**PAYLOAD, 'token': 'glados.cloud'},
-                        ['private-value']):
+        cases = (
+            ({**PAYLOAD, 'tsState': 'timeout'}, '页面报告超时'),
+            ({**PAYLOAD, 'tsState': 'error'}, '页面报告错误'),
+            ({**PAYLOAD, 'tsState': ['private-state']}, '缺少有效的验证状态'),
+            ({**PAYLOAD, 'turnstile': ''}, '缺少验证结果'),
+            ({**PAYLOAD, 'proof': ''}, '缺少必要的确认字段'),
+            ({'token': 'glados.rocks'}, '缺少有效的验证状态'),
+            ({**PAYLOAD, 'token': 'glados.cloud'}, '与配置域名不符'),
+            (['private-value'], '请求格式不符'),
+        )
+        for payload, message in cases:
             with self.subTest(payload=payload):
                 runner, _, _, _, routes = browser_fixture(outgoing=[request(payload)])
                 result = runner.checkin(COOKIE)
                 self.assertFalse(result.ok or result.submitted or result.unknown)
+                self.assertIn(message, result.message)
                 self.assertIn('未提交', result.message)
                 self.assertNotIn('private', result.message)
                 routes[0].abort.assert_called_once()
